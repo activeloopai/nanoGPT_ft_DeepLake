@@ -10,7 +10,7 @@ import deeplake
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
-num_proc = 8
+num_proc = 96
 
 # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
 dataset = load_dataset("openwebtext")
@@ -55,22 +55,21 @@ for split in split_dataset.keys():
     ds.commit()
     ds.summary()
 
-# Dataset(path='./data/deeplake/train', tensors=['text', 'tokens'])
+# Dataset(path='./data/deeplake/openwebtext-train', tensors=['text', 'tokens'])
+# tensor    htype           shape           dtype  compression
+# -------  -------         -------         -------  ------- 
+#  text     text        (8009762, 1)         str     None   
+# tokens   generic  (8009762, 132:131288)  uint16    None   
+
+#Dataset(path='./data/deeplake/openwebtext-val', tensors=['text', 'tokens'])
 # tensor    htype         shape         dtype  compression
 # -------  -------       -------       -------  ------- 
-#  text     text        (9995, 1)        str     None   
-# tokens   generic  (9995, 139:27567)  uint16    None   
-
-# Dataset(path='./data/deeplake/val', tensors=['text', 'tokens'])
-
-# tensor    htype       shape       dtype  compression
-# -------  -------     -------     -------  ------- 
-#  text     text       (5, 1)        str     None   
-# tokens   generic  (5, 477:1174)  uint16    None   
+#  text     text        (4007, 1)        str     None   
+# tokens   generic  (4007, 148:40801)  uint16    None  
 
 
-# ./deeplake/train is ~17GB, ./deeplake/val ~8.5MB
-# ./deeplake/train has ~9B tokens (9,035,582,198)
+# ./data/deeplake/openwebtext-val is ~35GB (tokens 15GB), ./deeplake/val ~21MB
+# ./data/deeplake/openwebtext-val has ~9B tokens (9,035,582,198) and all text
 # val has ~4M tokens (4,434,897)
 
 # to read the bin files later, e.g. with numpy:
