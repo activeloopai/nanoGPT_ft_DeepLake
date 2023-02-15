@@ -136,19 +136,18 @@ def collate_fn(data: List[np.ndarray]) -> Tuple[torch.Tensor, torch.Tensor]:
 def get_dataloader(split: deeplake.Dataset, shuffle: bool = False, coef: float = 2, num_workers: int = 1):
     """ Returns a dataloader for the given split. Uses fast enterprise dataloader if available"""
     if indra_available():
-        dl = dataloader(split)\
+        return dataloader(split)\
             .batch(int(coef*batch_size), drop_last=True)\
             .shuffle(shuffle)\
             .pytorch(num_workers=num_workers, tensors=['tokens'], collate_fn=collate_fn, distributed=ddp)
     else:
-        dl = split.pytorch(
+        return split.pytorch(
             num_workers=num_workers,
             batch_size=int(coef*batch_size),
             tensors=['tokens'],
             shuffle=shuffle,
             drop_last=True,
             collate_fn=collate_fn)
-    return dl
 
 if not local_data:
     # split the dataset and construct dataloaders
