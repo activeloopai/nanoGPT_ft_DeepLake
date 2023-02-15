@@ -41,7 +41,7 @@ for arg in sys.argv[1:]:
             # ensure the types match ok
             assert type(attempt) == type(globals()[key])
             # cross fingers
-            print(f"Overriding: {key} = {attempt}")
+            print(f"Overriding: {key} = {attempt if not key=='token' else '******************'}")
             globals()[key] = attempt
         else:
             raise ValueError(f"Unknown config key: {key}")

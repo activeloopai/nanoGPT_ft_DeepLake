@@ -1,13 +1,10 @@
 """
 This training script can be run both on a single gpu in debug mode,
 and also in a larger training run with distributed data parallel (ddp).
-
 To run on a single GPU, example:
 $ python train.py --batch_size=32 --compile=False
-
 To run with DDP on 4 gpus on 1 node, example:
 $ torchrun --standalone --nproc_per_node=4 train.py
-
 To run with DDP on 4 gpus across 2 nodes, example:
 - Run on the first (master) node with example IP 123.456.123.456:
 $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
@@ -26,8 +23,14 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from typing import List, Tuple
+
 
 from model import GPTConfig, GPT
+
+import deeplake
+from deeplake.enterprise.dataloader import indra_available, dataloader
+
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -43,11 +46,19 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
+
 # data
-dataset = 'openwebtext'
+dataset = ''  # specify path s3://openwebtext/path or hub://
+token = ''
+branch = 'main'
+num_workers = 2
+shuffle = False
+local_data = False # feeds local data
+train_split_ratio = 0.8
 gradient_accumulation_steps = 5 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
+
 # model
 n_layer = 12
 n_head = 12
@@ -104,34 +115,103 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-# poor man's data loader
-data_dir = os.path.join('data', dataset)
-train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-def get_batch(split):
-    data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
-    if device_type == 'cuda':
-        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-    else:
-        x, y = x.to(device), y.to(device)
+# ----------------------------- Deep Lake: Streamable dataloader ---------------------------------- 
+
+def collate_fn(data: List[np.ndarray]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """ Collate function samples from a batch of documents """
+    # concatenate all the tokens from the batch
+    data = [d['tokens'] for d in data]
+    data = np.concatenate(data, axis=0)
+
+    # sample a random block of from concatenated documents
+    ix = torch.randint(max(len(data) - block_size, 1), (batch_size,))
+    local_block_size = min(block_size, len(data)-1)
+
+    x = torch.stack(
+        [torch.from_numpy((data[i:i+local_block_size]).astype(np.int64)) for i in ix])
+    y = torch.stack(
+        [torch.from_numpy((data[i+1:i+1+local_block_size]).astype(np.int64)) for i in ix])
     return x, y
+
+def get_dataloader(split: deeplake.Dataset, shuffle: bool = False, coef: float = 2, num_workers: int = 1):
+    """ Returns a dataloader for the given split. Uses fast enterprise dataloader if available"""
+    if indra_available():
+        dl = dataloader(split)\
+            .batch(int(coef*batch_size), drop_last=True)\
+            .shuffle(shuffle)\
+            .pytorch(num_workers=num_workers, tensors=['tokens'], collate_fn=collate_fn, distributed=ddp)
+    else:
+        dl = split.pytorch(
+            num_workers=num_workers,
+            batch_size=int(coef*batch_size),
+            tensors=['tokens'],
+            shuffle=shuffle,
+            drop_last=True,
+            collate_fn=collate_fn)
+    return dl
+
+if not local_data:
+    # split the dataset and construct dataloaders
+    ds = deeplake.load(dataset, read_only=True, token=token)
+    ds.checkout(branch)
+
+    meta_vocab_size = None
+
+    n_tokens = sum(ds._tokens_shape.numpy())
+    print(f'There are ~{n_tokens[0]//10**9}B tokens in the dataset')
+
+    split = int(len(ds)*train_split_ratio)
+    dl = {
+        "train": get_dataloader(ds[:split], shuffle=shuffle, num_workers=num_workers),
+        "val": get_dataloader(ds[split:], shuffle=False, num_workers=1)
+    }
+    dl_iter = {"train": dl["train"].__iter__(), "val": dl["val"].__iter__()}
+
+    def get_batch(split: str):
+        try:
+            x, y = next(dl_iter[split])
+        except StopIteration:
+            print("reloading dataset")
+            dl[split]._dataloader = None
+            dl_iter[split] = dl[split].__iter__()
+            x, y = next(dl_iter[split])
+
+        if device_type == 'cuda':
+            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+            return x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+        else:
+            return x.to(device), y.to(device)
+
+# -----------------------------------------------------------------------------
+
+else: 
+    # poor man's data loader
+    data_dir = os.path.join('data', dataset)
+    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    def get_batch(split):
+        data = train_data if split == 'train' else val_data
+        ix = torch.randint(len(data) - block_size, (batch_size,))
+        x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+        if device_type == 'cuda':
+            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+            x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+        else:
+            x, y = x.to(device), y.to(device)
+        return x, y
+
+    meta_path = os.path.join(data_dir, 'meta.pkl')
+    meta_vocab_size = None
+    if os.path.exists(meta_path):
+        with open(meta_path, 'rb') as f:
+            meta = pickle.load(f)
+        meta_vocab_size = meta['vocab_size']
+        print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
-
-# attempt to derive vocab_size from the dataset
-meta_path = os.path.join(data_dir, 'meta.pkl')
-meta_vocab_size = None
-if os.path.exists(meta_path):
-    with open(meta_path, 'rb') as f:
-        meta = pickle.load(f)
-    meta_vocab_size = meta['vocab_size']
-    print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
