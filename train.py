@@ -49,7 +49,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 
 # data
 dataset = ''  # specify path s3://openwebtext/path or hub://
-token = ''
+token = None
 branch = 'main'
 num_workers = 2
 shuffle = False

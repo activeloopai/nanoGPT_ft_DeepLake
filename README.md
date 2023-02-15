@@ -24,8 +24,20 @@ Dependencies:
 
 ## quick start with Deep Lake streaming
 
+The dataset can be accessed at app.activeloop.ai/activeloop/openwebtext-train or directly streamed to the training via
+
 ```
-$ python3 train.py --dataset="hub://activeloop/openwebtext" --branch="tokenized" --token=$token
+$ python3 train.py --dataset="hub://activeloop/openwebtext-train"
+```
+or for DDP case
+
+```
+torchrun --standalone --nproc_per_node=8 train.py --dataset="hub://activeloop/openwebtext-train"
+```
+
+You can also prepare the dataset yourself following 
+```
+$ python data/deeplake/prepare.py
 ```
 
 ## quick start
