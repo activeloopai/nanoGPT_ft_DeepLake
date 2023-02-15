@@ -3,7 +3,7 @@
 
 after running `prepare.py` (preprocess) we get:
 
-- ./deeplake/train is (~32GB, where tokens tensor is 15, ./deeplake/val ~8.5MB
+- ./deeplake/train is (~32GB, where tokens tensor is 15GB), ./deeplake/val ~21MB
 - ./deeplake/train has ~9B tokens (9,035,582,198)
 - val has ~4M tokens (4,434,897)
 
