@@ -43,7 +43,7 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = False # disabled by default
+wandb_log = True # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 
@@ -56,7 +56,7 @@ shuffle = False
 local_data = False # feeds local data
 train_split_ratio = 0.8
 gradient_accumulation_steps = 5 # used to simulate larger batch sizes
-batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 28 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 
 # model
@@ -380,17 +380,17 @@ while True:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
-            model, gen_list = sample(model)
+            # model, gen_list = sample(model)
 
-            for g in gen_list[:3]:
-                wandb_table.add_data(iter_num, g[0], g[1], g[2])
+            # for g in gen_list[:3]:
+            #     wandb_table.add_data(iter_num, g[0], g[1], g[2])
 
             wandb.log({
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "train/lr": lr,
-                "table/generations": wandb_table,
+                # "table/generations": wandb_table,
                 "train/mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
